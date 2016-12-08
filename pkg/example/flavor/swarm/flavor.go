@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"text/template"
+
 	log "github.com/Sirupsen/logrus"
 	docker_types "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
@@ -14,7 +17,6 @@ import (
 	"github.com/docker/infrakit/pkg/spi/flavor"
 	"github.com/docker/infrakit/pkg/spi/instance"
 	"golang.org/x/net/context"
-	"text/template"
 )
 
 type nodeType string
@@ -251,23 +253,34 @@ func (s swarmFlavor) Prepare(
 	spec instance.Spec,
 	allocation types.AllocationMethod) (instance.Spec, error) {
 
+	log.Info("Prepare phase flavorProperties=", flavorProperties)
+	log.WithFields(log.Fields{
+		"flavorProperties": flavorProperties,
+		"spec":             spec,
+		"allocation":       allocation,
+	}).Info("arguments into Prepare")
+
 	properties, err := parseProperties(flavorProperties)
 	if err != nil {
+		log.Error("Prepare phase parse properties error=", err)
 		return spec, err
 	}
 
 	swarmStatus, err := s.client.SwarmInspect(context.Background())
 	if err != nil {
+		log.Error("Prepare phase failed to fetch Swarm join tokens error=", err)
 		return spec, fmt.Errorf("Failed to fetch Swarm join tokens: %s", err)
 	}
 
 	nodeInfo, err := s.client.Info(context.Background())
 	if err != nil {
+		log.Error("Prepare phase failed to fetch node self info error=", err)
 		return spec, fmt.Errorf("Failed to fetch node self info: %s", err)
 	}
 
 	self, _, err := s.client.NodeInspectWithRaw(context.Background(), nodeInfo.Swarm.NodeID)
 	if err != nil {
+		log.Error("Prepare phase failed to fetch Swarm node status error=", err)
 		return spec, fmt.Errorf("Failed to fetch Swarm node status: %s", err)
 	}
 
@@ -293,6 +306,13 @@ func (s swarmFlavor) Prepare(
 				"which will be used as an assigned private IP address")
 		}
 
+		// check if mgr status addr uses port 2377, if not, force to use port 2377
+		addr := self.ManagerStatus.Addr
+		if strings.HasSuffix(self.ManagerStatus.Addr, ":2377") == false {
+			addr = strings.TrimSuffix(self.ManagerStatus.Addr, ":2377") + ":2377"
+		}
+		log.Info("Prepare phase roleWorker type detected mgr address is ", addr)
+
 		spec.Init = generateInitScript(
 			self.ManagerStatus.Addr,
 			swarmStatus.JoinTokens.Manager,
@@ -312,6 +332,8 @@ func (s swarmFlavor) Prepare(
 	// TODO(wfarner): Use the cluster UUID to scope instances for this swarm separately from instances in another
 	// swarm.  This will require plumbing back to Scaled (membership tags).
 	spec.Tags["swarm-id"] = swarmStatus.ID
+
+	log.Info("Prepare phase finished with no error, spec=", spec)
 
 	return spec, nil
 }
